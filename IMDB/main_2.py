@@ -11,53 +11,44 @@ import transformers
 import random
 
 # ======================================================
-# CONFIGURATION
+# CONFIGURATION — flip these switches
 # ======================================================
-BASE_MODEL = "roberta-large"          
-EPOCHS = 2                            
-MAX_LENGTH = 512   
-LR = 2e-5
-LR_ENCODER = 2e-5                     
-LR_HEAD = 1e-3        
-WARMUP_RATIO = 0.05                 
-WEIGHT_DECAY = 0.01
-MAX_GRAD_NORM = 1.0
-BATCH_SIZE = 8 
-ACCUMULATION_STEPS = 8
-
+BASE_MODEL = "roberta-large"   # "bert-base-uncased", "roberta-base", "roberta-large" 1ep= 9.5, "microsoft/deberta-v3-base"
+ARCHITECTURE = "bilstm"        # "base" or "bilstm"
 
 # Load tokenizer
 tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
 
+
 # ======================================================
 # PREPROCESSING
 # ======================================================
-def preprocess_function(examples):
-    # Text augmentation: randomly delete words
-    def augment_text(t):
-        words = t.split()
-        if len(words) > 10 and random.random() < 0.15:
-            del words[random.randint(0, len(words) - 1)]
-        return " ".join(words)
-    
-    # Smart crop: keep start and end of long reviews
-    def smart_crop(t):
-        tokens = tokenizer.tokenize(t)
-        if len(tokens) > MAX_LENGTH:
-            half = MAX_LENGTH // 2
-            tokens = tokens[:half] + tokens[-half:]
-            t = tokenizer.convert_tokens_to_string(tokens)
-        return t
+def augment_text(t):
+    words = t.split()
+    if len(words) > 10 and random.random() < 0.15:
+        del words[random.randint(0, len(words) - 1)]
+    return " ".join(words)
 
+
+def preprocess_function(examples):
     texts = []
     for t in examples["text"]:
         t = t.replace("<br />", " ").strip()
         if random.random() < 0.3:
             t = augment_text(t)
         texts.append(t)
-        
+
+    # Smart crop: keep start and end of long reviews
+    def smart_crop(x):
+        tokens = tokenizer.tokenize(x)
+        if len(tokens) > 512:
+            half = 256
+            tokens = tokens[:half] + tokens[-half:]
+            x = tokenizer.convert_tokens_to_string(tokens)
+        return x
+
     texts = [smart_crop(t) for t in texts]
-    return tokenizer(texts, truncation=True, padding="max_length", max_length=MAX_LENGTH)
+    return tokenizer(texts, truncation=True, padding="longest", max_length=512)
 
 
 # ======================================================
@@ -97,13 +88,14 @@ class TransformerBiLSTMClassifier(nn.Module):
         return {"logits": logits}
 
 
-
-
 # ======================================================
-# MODEL INITIALIZATION 
+# INIT MODEL
 # ======================================================
 def init_model() -> nn.Module:
-    model = TransformerBiLSTMClassifier(BASE_MODEL)
+    if ARCHITECTURE == "bilstm":
+        model = TransformerBiLSTMClassifier(BASE_MODEL)
+    else:
+        raise ValueError(f"Unknown ARCHITECTURE={ARCHITECTURE}")
 
     # optional: enable gradient checkpointing for large models
     if hasattr(model.encoder, "gradient_checkpointing_enable"):
@@ -111,55 +103,53 @@ def init_model() -> nn.Module:
 
     return model
 
-def optimizer_model(model):
-    encoder = model.roberta
 
-    # Separate encoder vs. head params cleanly
-    encoder_params = list(encoder.parameters())
-    encoder_param_ids = {id(p) for p in encoder_params}
-    head_params = [p for n, p in model.named_parameters() if id(p) not in encoder_param_ids]
-    
-    optimizer = torch.optim.AdamW([
-            {"params": encoder_params, "lr": LR_ENCODER},
-            {"params": head_params, "lr": LR_HEAD},],
-    )
-
-    return optimizer
-    
 # ======================================================
 # TRAINING FUNCTION
 # ======================================================
 def train_model(model: nn.Module, dev_dataset: torch.utils.data.Dataset) -> nn.Module:
+    # # Dynamic batch sizing for large models
+    # bs = 8 if "large" in BASE_MODEL else 16
+    # accum = 8 if "large" in BASE_MODEL else 4
 
-    training_args = TrainingArguments(
-        per_device_train_batch_size=BATCH_SIZE,
-        gradient_accumulation_steps=ACCUMULATION_STEPS,
-        num_train_epochs=EPOCHS,
-        learning_rate=LR_ENCODER,
-        #warmup_ratio=WARMUP_RATIO,
-        weight_decay=WEIGHT_DECAY,
-        max_grad_norm=MAX_GRAD_NORM,
+    # training_args = TrainingArguments(
+    #     output_dir="./results",
+    #     eval_strategy="no",
+    #     save_strategy="epoch",
+    #     save_total_limit=1,
+    #     learning_rate=3e-5,
+    #     per_device_train_batch_size=bs,
+    #     gradient_accumulation_steps=accum,
+    #     num_train_epochs=2,
+    #     weight_decay=0.01,
+    #     warmup_ratio=0.05,
+    #     lr_scheduler_type="cosine",
+    #     fp16=True,
+    #     logging_strategy="epoch",
+    #     disable_tqdm=True,
+    #     report_to="none",
+    #     max_grad_norm=1.0,
+    # )
 
-        lr_scheduler_type="cosine",
-        fp16=True,
+    # Detect encoder module (bert / roberta / deberta)
+    # if hasattr(model, "encoder"):
+    #     encoder = model.encoder
+    # else:
+    
+    encoder = model
 
-        output_dir="./results",
-        save_strategy="epoch",
-        save_total_limit=1,
-        
-        eval_strategy="no",
-        logging_strategy="epoch",
-        disable_tqdm=True,
-        report_to="none",
-    )
+
+
 
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=dev_dataset,
         tokenizer=tokenizer,
-        optimizers=(optimizer_model(model), None),
+        optimizers=(optimizer, None),
     )
 
     trainer.train()
+    trainer.args.learning_rate = 1e-5
+    trainer.train(resume_from_checkpoint=True)
     return model
