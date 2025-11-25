@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import transformers
 import random
+from datasets import load_dataset
 
 # ======================================================
 # CONFIGURATION
@@ -28,6 +29,7 @@ ACCUMULATION_STEPS = 8
 
 # Load tokenizer
 tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+dataset = load_dataset("imdb")
 
 # ======================================================
 # PREPROCESSING
@@ -58,6 +60,8 @@ def preprocess_function(examples):
         
     texts = [smart_crop(t) for t in texts]
     return tokenizer(texts, truncation=True, padding="max_length", max_length=MAX_LENGTH)
+
+tokenized_datasets = dataset.map(preprocess_function, batched=True, remove_columns=["text"])
 
 
 # ======================================================
@@ -156,7 +160,8 @@ def train_model(model: nn.Module, dev_dataset: torch.utils.data.Dataset) -> nn.M
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=dev_dataset,
+        train_dataset=tokenized_datasets["train"].shuffle(seed=42).select(range(20000)),  # subset for ≤15 min
+        eval_dataset=tokenized_datasets["test"].select(range(4000)),
         tokenizer=tokenizer,
         optimizers=(optimizer_model(model), None),
     )
