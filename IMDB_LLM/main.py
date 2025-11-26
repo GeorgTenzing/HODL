@@ -89,10 +89,10 @@ class TransformerBiLSTMClassifier(nn.Module):
 
     def forward(self, input_ids, attention_mask=None, labels=None):
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
-        sequence_output = outputs.last_hidden_state  # [B, L, H]
+        sequence_output = outputs.last_hidden_state 
 
-        lstm_out, _ = self.lstm(sequence_output)     # [B, L, 2*lstm_hidden]
-        pooled = torch.mean(lstm_out, dim=1)         # mean pooling
+        lstm_out, _ = self.lstm(sequence_output)     
+        pooled = torch.mean(lstm_out, dim=1)         
 
         logits = self.classifier(pooled)
         if labels is not None:
